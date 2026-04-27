@@ -1,0 +1,161 @@
+CONTENT BROADCASTING SYSTEM - ARCHITECTURE NOTES
+
+================================================================================
+OVERALL DESIGN
+================================================================================
+
+The backend follows a standard layered architecture to keep concerns separated:
+
+Routes layer handles HTTP routing and validation. Each route file groups related 
+endpoints (auth, content) and applies middleware for authentication and input 
+validation using express-validator.
+
+Controllers layer processes requests and responses. Controllers are kept thin - 
+they extract request data, call service functions, and format responses. All 
+responses follow a consistent {success, message, data} structure.
+
+Services layer contains business logic. This is where content approval, rotation 
+calculations, and scheduling logic live. Services interact with models and handle 
+complex operations like determining which content is currently broadcasting.
+
+Models layer defines database schema using Sequelize ORM. Models include User, 
+Content, ContentSlot, and ContentSchedule with proper associations and indexes.
+
+This separation makes the code maintainable and testable. Business logic changes 
+don't require touching routes or controllers.
+
+================================================================================
+DATABASE DESIGN CHOICE
+================================================================================
+
+MySQL was chosen for its reliability and ACID compliance. Content scheduling and 
+approval workflows need transactional integrity, and MySQL handles this well.
+
+Sequelize ORM provides a clean abstraction over raw SQL. It handles migrations, 
+associations, and validation declaratively. The models are:
+
+User - Stores teacher and principal accounts with bcrypt-hashed passwords. Role 
+field determines access permissions.
+
+Content - Main table for uploaded content. Stores file metadata, scheduling times 
+(start_time, end_time), status (pending/approved/rejected), and foreign keys to 
+uploader and approver.
+
+ContentSlot - Represents a subject category. Each subject gets one slot. This 
+groups content by subject for rotation purposes.
+
+ContentSchedule - Junction table linking Content to ContentSlot. Stores rotation_order 
+(sequence in rotation) and duration (minutes). Has a unique composite index on 
+(slot_id, rotation_order) to prevent conflicts.
+
+The schema supports the core workflow: upload -> approval -> scheduled broadcast.
+
+================================================================================
+AUTHENTICATION APPROACH
+================================================================================
+
+JWT-based authentication was implemented for stateless auth. When users login, 
+they receive a token containing their user ID and role. This token is verified 
+on protected routes using the protect middleware.
+
+Role-based access control separates teacher and principal permissions. Teachers 
+can upload content and view their own uploads. Principals can review pending 
+content and approve/reject it. The authorizeRoles middleware enforces this.
+
+Passwords are hashed with bcrypt (10 salt rounds) before storage. The password 
+hash is explicitly excluded from all API responses to prevent exposure.
+
+Public broadcast endpoints don't require authentication since they're meant for 
+display systems and digital signage.
+
+================================================================================
+BROADCASTING LOGIC
+================================================================================
+
+Content is organized by subject. When a teacher uploads content, the system finds 
+or creates a ContentSlot for that subject. The content is linked to the slot via 
+ContentSchedule with an auto-incremented rotation_order.
+
+After principal approval, content enters the rotation queue for its subject. The 
+rotation engine activates when current time falls within the content's start_time 
+and end_time window.
+
+The dynamic rotation calculation works like this:
+
+1. Fetch all approved content for a subject where current time is between start 
+   and end times
+2. Sort by rotation_order, then created_at
+3. Calculate total cycle duration by summing all durations
+4. Find elapsed time since the earliest start_time (cycle reference point)
+5. Use modulo to find position in current cycle
+6. Determine which content owns that position
+
+For example, if three items have durations 5, 5, and 10 minutes (total 20 min 
+cycle), and 13 minutes have elapsed, position 13 % 20 = 13 falls in the third 
+item's slot (minutes 10-20).
+
+This ensures only one content item per subject broadcasts at any moment, cycling 
+fairly based on configured durations.
+
+================================================================================
+TIMEZONE HANDLING
+================================================================================
+
+All scheduling uses IST (Indian Standard Time, UTC+5:30) as the default. When 
+teachers provide start_time and end_time without timezone suffixes, the system 
+treats them as IST.
+
+The parseAsIST utility function handles this conversion. If a datetime string has 
+a timezone suffix (Z or +HH:MM), it's parsed directly. Otherwise, it's treated as 
+IST by subtracting the IST offset before storing as UTC in the database.
+
+This prevents confusion where a teacher schedules content for 9 AM IST but the 
+system interprets it as 9 AM UTC. The approach keeps scheduling intuitive for 
+Indian schools while maintaining UTC internally for consistency.
+
+================================================================================
+KEY ASSUMPTIONS
+================================================================================
+
+Principal approval is mandatory before content can broadcast. Teachers cannot 
+approve their own content. This enforces a review workflow.
+
+File storage is local in the src/uploads directory. Files are stored with unique 
+names (timestamp + random string + sanitized original name) to prevent conflicts. 
+Allowed types are PNG, JPEG, JPG, and PDF with a 10MB size limit.
+
+Public broadcast endpoints are read-only. They don't require authentication but 
+also can't modify data. This is safe for display systems.
+
+Rotation order is automatically assigned based on upload sequence within each 
+subject. The first upload gets order 1, second gets 2, etc. This prevents unique 
+constraint violations on the (slot_id, rotation_order) composite index.
+
+Content must have both start_time and end_time to participate in broadcasting. 
+The rotation engine only considers content within active time windows.
+
+================================================================================
+POSSIBLE ENHANCEMENTS
+================================================================================
+
+Redis caching could improve performance for frequently accessed live feeds. Cache 
+the currently broadcasting content per subject with a short TTL (30-60 seconds) 
+to reduce database queries.
+
+Cloud file storage (S3, Google Cloud Storage) would be better for production. 
+Local storage doesn't scale across multiple server instances and lacks redundancy. 
+Storing file URLs instead of local paths would enable CDN delivery.
+
+Analytics dashboard could track content views, broadcast duration, and teacher 
+engagement. Add a views table to log when content is fetched via public APIs. 
+This data helps principals understand which content is most effective.
+
+Email notifications for approval/rejection would improve the workflow. Teachers 
+could receive alerts when their content is reviewed instead of manually checking.
+
+Content versioning would allow teachers to update content while preserving history. 
+Add a version field and parent_id to track revisions.
+
+Scheduled content expiration could automatically archive old content after the 
+end_time passes. Add a cleanup job that runs daily to move expired content to an 
+archive table.
