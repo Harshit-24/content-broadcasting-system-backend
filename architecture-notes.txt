@@ -4,7 +4,7 @@ CONTENT BROADCASTING SYSTEM - ARCHITECTURE NOTES
 OVERALL DESIGN
 ================================================================================
 
-The backend follows a standard layered architecture to keep concerns separated:
+The project is structured in separate layers so that routing, business logic, and database operations remain easy to manage independently:
 
 Routes layer handles HTTP routing and validation. Each route file groups related 
 endpoints (auth, content) and applies middleware for authentication and input 
@@ -21,8 +21,7 @@ complex operations like determining which content is currently broadcasting.
 Models layer defines database schema using Sequelize ORM. Models include User, 
 Content, ContentSlot, and ContentSchedule with proper associations and indexes.
 
-This separation makes the code maintainable and testable. Business logic changes 
-don't require touching routes or controllers.
+This structure made development easier because most feature changes stayed isolated inside the service layer without affecting the request handling flow.
 
 ================================================================================
 DATABASE DESIGN CHOICE
@@ -48,7 +47,7 @@ ContentSchedule - Junction table linking Content to ContentSlot. Stores rotation
 (sequence in rotation) and duration (minutes). Has a unique composite index on 
 (slot_id, rotation_order) to prevent conflicts.
 
-The schema supports the core workflow: upload -> approval -> scheduled broadcast.
+Together these tables support the full lifecycle from teacher upload to principal approval and then public broadcasting.
 
 ================================================================================
 AUTHENTICATION APPROACH
